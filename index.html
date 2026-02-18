@@ -90,37 +90,29 @@
     // --- Prompts ---
     const PROMPTS = {
       words: (grammarTitle, grammarStruct) => `角色:英语老师。任务:根据用户话题提供5个高级词汇。上下文:目标语法是"${grammarTitle} (${grammarStruct})"。输出JSON:{candidateWords:[{word,ipa,mean(中文)}]}`,
-      chat: (words, patternTitle) => `角色:英语教练。当前重点词汇:${words}。当前重点语法:${patternTitle}。任务:1.润色用户输入(userRefinedEn)使其更地道。2.用目标语法自然回复(aiResponseEn)并附带中文翻译(aiResponseCn)。3.结尾必须用英文提问引导对话。输出JSON:{userRefinedEn, aiResponseEn, aiResponseCn}`,
-      review: "任务:复盘对话。输出JSON:{score(0-100), corrections:[{original,correction,reason(中文)}], patternAnalysis(中文分析语法运用), weakness(中文分析弱点)}",
+      // 更新：明确要求结尾提问
+      chat: (words, patternTitle) => `角色:英语教练。当前重点词汇:${words}。当前重点语法:${patternTitle}。任务:1.润色用户输入(userRefinedEn)使其更地道。2.用目标语法自然回复(aiResponseEn)并附带中文翻译(aiResponseCn)。3.回复结尾必须包含一个针对话题的开放式问题以保持对话继续。输出JSON:{userRefinedEn, aiResponseEn, aiResponseCn}`,
+      // 更新：明确要求复盘原始输入
+      review: "任务:复盘对话。请严格针对用户的【原始输入】(user messages中的text字段)进行纠错，【不要】分析AI润色后的refined字段。指出原始输入中的语法错误和不地道表达。输出JSON:{score(0-100), corrections:[{original:用户原句, correction:修正后句子, reason:中文解释}], patternAnalysis(中文分析语法运用), weakness(中文分析弱点)}",
       hint: (ctx) => `根据上下文:${ctx}，提供3个英语回复建议。输出JSON:[{en,cn}]`
     };
 
     // --- Components ---
     
-    // 修复后的 Icon 组件：使用 ref 和容器来隔离 DOM 操作，防止 React 报错
+    // Icon 组件
     const Icon = ({ name, size = 18, className = "", onClick }) => {
       const ref = useRef(null);
 
       useEffect(() => {
         if (!window.lucide || !ref.current) return;
-        
-        // 创建一个临时的 i 标签供 lucide 转换
         const i = document.createElement('i');
         i.setAttribute('data-lucide', name);
-        
-        // 清空容器并添加 i 标签
         ref.current.innerHTML = '';
         ref.current.appendChild(i);
-        
-        // 调用 createIcons，限定在 ref.current 内部
         window.lucide.createIcons({
           root: ref.current,
           nameAttr: 'data-lucide',
-          attrs: {
-            width: size,
-            height: size,
-            class: className
-          }
+          attrs: { width: size, height: size, class: className }
         });
       }, [name, size, className]);
 
@@ -155,7 +147,69 @@
       </div>
     );
 
-    // Clickable Word Component
+    // --- Speech Helper (Global) ---
+    const speak = (text) => {
+      if (!window.speechSynthesis || !text) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      let voices = window.speechSynthesis.getVoices();
+      const preferredVoice = 
+        voices.find(v => v.name === 'Samantha') || 
+        voices.find(v => v.name === 'Daniel') ||
+        voices.find(v => v.name.includes('Google US English')) ||
+        voices.find(v => v.lang.startsWith('en'));
+      if (preferredVoice) utterance.voice = preferredVoice;
+      window.speechSynthesis.speak(utterance);
+    };
+
+    // --- WordSpan Component for Logic Isolation ---
+    const WordSpan = ({ word, selectedWords, onToggleWord }) => {
+       const cleanWord = word.toLowerCase();
+       const isSelected = selectedWords.some(w => w.word.toLowerCase() === cleanWord);
+       const timerRef = useRef(null);
+       const isLongPress = useRef(false);
+
+       const handleStart = (e) => {
+          isLongPress.current = false;
+          // 设置长按定时器 (500ms)
+          timerRef.current = setTimeout(() => {
+             isLongPress.current = true;
+             speak(word); // 调用系统朗读
+             if (navigator.vibrate) navigator.vibrate(50); // 震动反馈
+          }, 500);
+       };
+
+       const handleEnd = (e) => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          if (!isLongPress.current) {
+             // 短按 -> 切换黄金词汇
+             onToggleWord && onToggleWord(word);
+          }
+       };
+
+       const handleCancel = () => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+       };
+
+       return (
+         <span 
+           onPointerDown={handleStart}
+           onPointerUp={handleEnd}
+           onPointerLeave={handleCancel}
+           style={{ touchAction: 'pan-y', WebkitUserSelect: 'none', userSelect: 'none' }} // 允许滚动但禁止原生选词
+           className={`cursor-pointer rounded px-0.5 transition-all duration-200 ${
+              isSelected 
+                ? 'golden-highlight shadow-sm transform scale-105 inline-block mx-0.5' 
+                : 'hover:bg-stone-100 hover:text-teal-600'
+           }`}
+         >
+           {word}
+         </span>
+       );
+    };
+
+    // Clickable Text Container
     const ClickableText = ({ text, selectedWords, onToggleWord }) => {
       const parts = text.split(/([a-zA-Z\u00C0-\u00FF]+(?:['’][a-zA-Z\u00C0-\u00FF]+)?)/g);
       
@@ -163,23 +217,13 @@
         <span>
           {parts.map((part, i) => {
              if (!/^[a-zA-Z\u00C0-\u00FF]/.test(part)) return <span key={i}>{part}</span>;
-             
-             const cleanWord = part.toLowerCase();
-             const isSelected = selectedWords.some(w => w.word.toLowerCase() === cleanWord);
-             
              return (
-               <span 
-                 key={i}
-                 onClick={(e) => { e.stopPropagation(); onToggleWord && onToggleWord(part); }}
-                 className={`cursor-pointer rounded px-0.5 transition-all duration-200 ${
-                    isSelected 
-                      ? 'golden-highlight shadow-sm transform scale-105 inline-block mx-0.5' 
-                      : 'hover:bg-stone-100 hover:text-teal-600'
-                 }`}
-                 title={isSelected ? "黄金词汇" : "点击加入"}
-               >
-                 {part}
-               </span>
+               <WordSpan 
+                 key={i} 
+                 word={part} 
+                 selectedWords={selectedWords} 
+                 onToggleWord={onToggleWord} 
+               />
              );
           })}
         </span>
@@ -204,21 +248,6 @@
         content = content.replace(/```json\n?|```/g, '').trim();
         return JSON.parse(content);
       } catch (e) { console.error("AI Error", e); alert("AI服务繁忙，请重试"); throw e; }
-    };
-
-    const speak = (text) => {
-      if (!window.speechSynthesis || !text) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
-      let voices = window.speechSynthesis.getVoices();
-      const preferredVoice = 
-        voices.find(v => v.name === 'Samantha') || 
-        voices.find(v => v.name === 'Daniel') ||
-        voices.find(v => v.name.includes('Google US English')) ||
-        voices.find(v => v.lang.startsWith('en'));
-      if (preferredVoice) utterance.voice = preferredVoice;
-      window.speechSynthesis.speak(utterance);
     };
 
     // --- Views ---
@@ -378,7 +407,6 @@
       const [input, setInput] = useState("");
       const endRef = useRef(null);
       
-      // Load voices on mount
       useEffect(() => {
         const load = () => { window.speechSynthesis.getVoices(); };
         load();
@@ -444,7 +472,7 @@
                       <button 
                         onClick={() => speak(m.role === 'user' ? m.refined : m.en)}
                         className={`p-1 rounded-full transition-colors ${m.role === 'user' ? 'hover:bg-teal-50 text-teal-200 hover:text-teal-600' : 'hover:bg-stone-100 text-stone-300 hover:text-stone-600'}`}
-                        title="朗读"
+                        title="朗读整句"
                       >
                         <Icon name="volume-2" size={14} />
                       </button>
