@@ -53,28 +53,42 @@
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo } = React;
     const { createRoot } = ReactDOM;
-    const { createClient } = supabase;
-
+    
     // --- Config ---
     const SUPABASE_URL = "https://kizandyfonohbbnxxvzf.supabase.co";
     const SUPABASE_KEY = "sb_publishable_ah_LeCeQ8Zwe2Z_v_cQavw_Cj-EVZkE";
     const SILICON_KEY = "sk-trzkhxflazgegemorowwscodqnzcdzbtnhujpacxxicwwchn";
     
-    const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+    // Initialize Supabase Client
+    let db = null;
+    try {
+      if (window.supabase) {
+        db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      }
+    } catch (e) {
+      console.warn("Supabase Init Error", e);
+    }
     
     // User ID
     const getUserId = () => {
-      let uid = localStorage.getItem('em_uid');
-      if (!uid) { 
-        uid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'user-' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem('em_uid', uid); 
+      try {
+        let uid = localStorage.getItem('em_uid');
+        if (!uid) { 
+          uid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'user-' + Math.random().toString(36).substr(2, 9);
+          localStorage.setItem('em_uid', uid); 
+        }
+        return uid;
+      } catch (e) {
+        return 'guest-user';
       }
-      return uid;
     };
     const USER_ID = getUserId();
 
     // --- Logic Functions ---
     async function callAI(sysMsg, userMsg) {
+      if (!navigator.onLine) {
+        throw new Error("网络已断开，请检查您的连接。");
+      }
       try {
         const res = await fetch("https://api.siliconflow.cn/v1/chat/completions", {
           method: 'POST',
@@ -86,14 +100,20 @@
             stream: false
           })
         });
+        
+        if (!res.ok) {
+          throw new Error(`API Error: ${res.status}`);
+        }
+
         const data = await res.json();
-        if (!data.choices) throw new Error("API Error");
+        if (!data.choices || data.choices.length === 0) throw new Error("API response empty");
+        
         let content = data.choices[0].message.content;
         content = content.replace(/```json\n?|```/g, '').trim();
         return JSON.parse(content);
       } catch (e) { 
-        console.error("AI Error", e); 
-        alert("AI服务繁忙，请稍后重试。"); 
+        console.error("AI Service Error:", e); 
+        // Rethrow to be caught by UI handlers
         throw e; 
       }
     }
@@ -305,7 +325,7 @@
       );
     };
 
-    // Custom Modal for Deep Dive
+    // Deep Dive Modal
     const DeepDiveModal = ({ isOpen, data, onClose, isLoading, onRefresh }) => {
       if (!isOpen) return null;
       return (
@@ -369,7 +389,7 @@
       );
     };
 
-    // Custom Modal Component for Confirmation
+    // Confirm Modal
     const ConfirmModal = ({ isOpen, title, message, onConfirm, onCancel }) => {
       if (!isOpen) return null;
       return (
@@ -412,7 +432,6 @@
        );
     };
 
-    // Header Word Chip with Long Press Logic
     const HeaderWordChip = ({ word, onRemove, onDeepDive }) => {
       const timerRef = useRef(null);
       const isLongPress = useRef(false);
@@ -475,7 +494,6 @@
               <button onClick={onHelp} className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors"><Icon name="help-circle" size={20} className="text-white"/></button>
             </div>
             <p className="opacity-90 mb-6 text-sm">DeepSeek 驱动 · 沉浸式口语私教</p>
-            {/* 1. 绿宝石幻彩色按钮 */}
             <Btn onClick={() => onStart(null)} className="btn-emerald-iridescent text-white mt-6 w-full sm:w-auto shadow-lg">
               <Icon name="plus" size={20}/> 开启新对话
             </Btn>
@@ -586,7 +604,7 @@
             <button onClick={onHome} className="p-2 hover:bg-stone-100 rounded-full text-stone-500 flex items-center gap-1">
               <Icon name="arrow-left" size={24} className="text-teal-600 font-bold" /><span className="text-sm font-bold text-teal-800">首页</span>
             </button>
-            <div className="flex gap-2 text-xs font-bold flex-wrap max-w-[70%] max-h-14 overflow-y-auto">
+            <div className="flex gap-2 text-xs font-bold flex-wrap max-w-[70%] max-h-24 overflow-y-auto">
               {config.words.map(w => (
                 <HeaderWordChip 
                   key={w.word} 
@@ -712,6 +730,7 @@
 
       const fetchHistory = async () => {
         try {
+          if (!db) return; // Guard clause
           const { data, error } = await db.from('sessions').select('*').eq('user_id', USER_ID).order('created_at', { ascending: false });
           if (data) setHistory(data);
         } catch(e) { console.log("Network error"); }
@@ -719,6 +738,7 @@
 
       const saveSession = async (updates) => {
         try {
+          if (!db) return; // Guard clause
           const payload = {
             user_id: USER_ID,
             topic: updates.topic || topic,
@@ -739,7 +759,7 @@
       useEffect(() => { fetchHistory(); }, []);
 
       const confirmDelete = async () => {
-        if(!deleteTargetId) return;
+        if(!deleteTargetId || !db) return;
         try {
           await db.from('sessions').delete().eq('id', deleteTargetId);
           fetchHistory();
@@ -765,6 +785,9 @@
         try {
           const res = await callAI(PROMPTS.words(grammar.title, grammar.structure), topic);
           setWordCandidates(res.candidateWords); setView('config_words');
+        } catch (e) {
+          console.error(e);
+          alert("生成失败，请重试");
         } finally { setLoading(false); }
       };
 
@@ -778,6 +801,9 @@
           setMessages(finalMsgs); 
           saveSession({ messages: finalMsgs });
           if(res.aiResponseEn) speak(res.aiResponseEn);
+        } catch (e) {
+          console.error(e);
+          alert("发送失败，请重试");
         } finally { setLoading(false); }
       };
 
@@ -789,6 +815,9 @@
           if (res && res.response) {
              await handleSendMessage(res.response); 
           }
+        } catch (e) {
+          console.error(e);
+          alert("代讲失败，请重试");
         } finally { setLoading(false); }
       };
 
@@ -798,6 +827,9 @@
           const ctx = JSON.stringify(messages);
           const res = await callAI(PROMPTS.review, `Context:${ctx}. Grammar:${grammar.title}`);
           setReview(res); setView('review'); saveSession({ review: res });
+        } catch (e) {
+          console.error(e);
+          alert("复盘生成失败");
         } finally { setLoading(false); }
       };
 
