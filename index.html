@@ -118,13 +118,25 @@
       }
     }
 
-    // 核心改进：移除了强行指定 Samantha 的逻辑，让 iOS 自动调用最优默认发音引擎
+    // 核心改进：支持读取用户自定义选择的发音人，若无选择则使用智能默认引擎
     function speak(text) {
       if (!window.speechSynthesis || !text) return;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-US';
-      // 移除原有的 getVoices 逻辑，把选择权交还给系统
+
+      // 获取用户选定的发音人
+      const savedVoiceName = localStorage.getItem('em_voice');
+      if (savedVoiceName && savedVoiceName !== 'default') {
+        const voices = window.speechSynthesis.getVoices();
+        const voice = voices.find(v => v.name === savedVoiceName);
+        if (voice) {
+            utterance.voice = voice;
+            // 匹配发音人的特定口音语言代码（如 en-GB, en-AU）
+            utterance.lang = voice.lang; 
+        }
+      }
+
       window.speechSynthesis.speak(utterance);
     }
 
@@ -580,6 +592,11 @@
     const ChatView = ({ messages, onSend, onSpeakForMe, onReview, onViewPastReview, loading, config, onHome, onToggleWord, onDeepDive, chatStyle, setChatStyle, hasPastReview }) => {
       const [input, setInput] = useState("");
       const [showSettings, setShowSettings] = useState(false);
+      
+      // Voice selector states
+      const [availableVoices, setAvailableVoices] = useState([]);
+      const [currentVoice, setCurrentVoice] = useState(localStorage.getItem('em_voice') || 'default');
+      
       const endRef = useRef(null);
       
       useEffect(() => {
@@ -589,6 +606,40 @@
       }, []);
 
       useEffect(() => endRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
+      
+      // Load available English voices
+      useEffect(() => {
+        const loadVoices = () => {
+          if (window.speechSynthesis) {
+            const v = window.speechSynthesis.getVoices().filter(voice => voice.lang.startsWith('en'));
+            setAvailableVoices(v);
+          }
+        };
+        loadVoices();
+        if (window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {
+          window.speechSynthesis.onvoiceschanged = loadVoices;
+        }
+      }, []);
+
+      const handleVoiceChange = (vName) => {
+        setCurrentVoice(vName);
+        localStorage.setItem('em_voice', vName);
+        
+        // Trial sound when changing voice
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance("Hello! How do I sound?");
+            u.lang = 'en-US';
+            if (vName !== 'default') {
+                const voice = window.speechSynthesis.getVoices().find(v => v.name === vName);
+                if (voice) {
+                    u.voice = voice;
+                    u.lang = voice.lang;
+                }
+            }
+            window.speechSynthesis.speak(u);
+        }
+      };
 
       const styleOptions = [
         { id: 'casual', label: '老友吹水 (oral)', icon: 'smile' },
@@ -620,17 +671,39 @@
                    <span className="absolute top-1 right-1 w-2 h-2 bg-teal-500 rounded-full border border-white"></span>
                  </button>
                  {showSettings && (
-                   <div className="absolute right-0 top-full mt-2 w-40 bg-white rounded-xl shadow-xl border border-stone-100 p-2 z-50 animate-slide-up">
-                     <div className="text-[10px] text-stone-400 font-bold uppercase tracking-widest px-2 mb-1">Reply Style</div>
-                     {styleOptions.map(opt => (
-                       <button 
-                         key={opt.id}
-                         onClick={() => { setChatStyle(opt.id); setShowSettings(false); }}
-                         className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-2 ${chatStyle === opt.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-stone-50 text-stone-600'}`}
-                       >
-                         <Icon name={opt.icon} size={14}/> {opt.label}
-                       </button>
-                     ))}
+                   <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-xl border border-stone-100 p-3 z-50 animate-slide-up">
+                     
+                     {/* Chat Style Selection */}
+                     <div className="text-[10px] text-stone-400 font-bold uppercase tracking-widest mb-2">Reply Style</div>
+                     <div className="space-y-1 mb-3">
+                       {styleOptions.map(opt => (
+                         <button 
+                           key={opt.id}
+                           onClick={() => { setChatStyle(opt.id); setShowSettings(false); }}
+                           className={`w-full text-left px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-2 ${chatStyle === opt.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-stone-50 text-stone-600'}`}
+                         >
+                           <Icon name={opt.icon} size={14}/> {opt.label}
+                         </button>
+                       ))}
+                     </div>
+
+                     {/* Voice Accent Selection */}
+                     <div className="border-t border-stone-100 pt-3">
+                        <div className="text-[10px] text-stone-400 font-bold uppercase tracking-widest mb-2 flex items-center gap-1">
+                            <Icon name="volume-2" size={12}/> Voice Accent
+                        </div>
+                        <select 
+                            value={currentVoice}
+                            onChange={(e) => handleVoiceChange(e.target.value)}
+                            className="w-full text-xs p-2 rounded-lg bg-stone-50 border border-stone-200 outline-none text-stone-700 font-medium cursor-pointer hover:border-teal-300 transition-colors"
+                        >
+                            <option value="default">智能默认 (最流畅)</option>
+                            {availableVoices.map(v => (
+                                <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
+                            ))}
+                        </select>
+                     </div>
+
                    </div>
                  )}
                </div>
