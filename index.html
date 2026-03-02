@@ -118,14 +118,13 @@
       }
     }
 
+    // 核心改进：移除了强行指定 Samantha 的逻辑，让 iOS 自动调用最优默认发音引擎
     function speak(text) {
       if (!window.speechSynthesis || !text) return;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-US';
-      let voices = window.speechSynthesis.getVoices();
-      const preferredVoice = voices.find(v => v.name === 'Samantha') || voices.find(v => v.name === 'Daniel') || voices.find(v => v.lang.startsWith('en'));
-      if (preferredVoice) utterance.voice = preferredVoice;
+      // 移除原有的 getVoices 逻辑，把选择权交还给系统
       window.speechSynthesis.speak(utterance);
     }
 
